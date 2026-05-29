@@ -1,0 +1,19 @@
+{
+  "name": "hex_irregular",
+  "description": "Irregular 6-sided polygon — elongated with one indented corner. Stress test for frontier planner across non-convex-ish shapes (still convex but heavily asymmetric).",
+  "polygon": [
+    [-3.5, -2.5],
+    [ 2.5, -3.5],
+    [ 6.5, -1.0],
+    [ 6.0,  2.5],
+    [ 1.5,  4.0],
+    [-4.0,  2.0]
+  ],
+  "poly_margin": 0.50,
+  "base": [0.0, 0.0],
+  "spawn": [0.0, 0.0, 0.20],
+  "spawn_yaw": 0.0,
+  "marker_grid_res": 1.0,
+  "wall_height": 4.5,
+  "tape_color": [1.0, 0.9, 0.0, 1.0]
+}
