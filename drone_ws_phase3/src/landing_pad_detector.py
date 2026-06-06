@@ -84,6 +84,8 @@ class LandingPadDetector(Node):
         self._last_area = 0
         self._frames = 0
         self._detects = 0
+        self._first_cam_logged   = False
+        self._first_lidar_logged = False
 
         self._gz = gz.transport13.Node()
         ok1 = self._gz.subscribe(GzImage,     CAM_TOPIC,   self._on_image)
@@ -95,7 +97,7 @@ class LandingPadDetector(Node):
             f'min_area={MIN_AREA_PX}px')
 
         self.create_timer(0.1, self._publish_cb)
-        self.create_timer(2.0, self._log_status)
+        self.create_timer(1.0, self._log_status)
 
     # ── lidar → altitude ────────────────────────────────────────────────────
     def _on_lidar(self, msg: GzLaserScan):
@@ -104,9 +106,18 @@ class LandingPadDetector(Node):
         if valid:
             with self._lock:
                 self._altitude = min(valid)
+            if not self._first_lidar_logged:
+                self._first_lidar_logged = True
+                self.get_logger().info(
+                    f'[SENSOR OK] Lidar altitude stream active  '
+                    f'alt={self._altitude:.3f} m')
 
     # ── camera → red-blob detection ─────────────────────────────────────────
     def _on_image(self, msg: GzImage):
+        if not self._first_cam_logged:
+            self._first_cam_logged = True
+            self.get_logger().info(
+                f'[SENSOR OK] Camera stream active  {msg.width}x{msg.height} px')
         self._frames += 1
         arr = np.frombuffer(msg.data, dtype=np.uint8)
         if arr.size != msg.width * msg.height * 3:
@@ -187,12 +198,19 @@ class LandingPadDetector(Node):
 
     def _log_status(self):
         with self._lock:
-            age = time.monotonic() - self._last_detect_t if self._last_detect_t else -1.0
+            age  = (time.monotonic() - self._last_detect_t
+                    if self._last_detect_t else -1.0)
+            alt  = self._altitude
+            dx   = self._last_dx
+            dy   = self._last_dy
+            area = self._last_area
+        fresh  = (self._last_detect_t > 0.0 and age <= STALE_SEC)
+        status = 'PAD LOCKED' if fresh else 'searching...'
         self.get_logger().info(
-            f'LPAD: frames={self._frames} detects={self._detects} '
-            f'h={self._altitude:.2f}m dx={self._last_dx:+.2f} '
-            f'dy={self._last_dy:+.2f} area={self._last_area}px '
-            f'age={age:.1f}s')
+            f'LPAD [{status}]  '
+            f'frames={self._frames}  detects={self._detects}  '
+            f'alt={alt:.2f}m  offset=({dx:+.3f},{dy:+.3f})m  '
+            f'area={area}px  age={age:.1f}s')
 
 
 def main():

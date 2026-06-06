@@ -80,6 +80,11 @@ class VioPublisher(Node):
             with self._lock:
                 self._latest    = ps
                 self._gz_count += 1
+            if self._gz_count == 1:
+                self.get_logger().info(
+                    f'[SENSOR OK] Gazebo pose stream active for {MODEL_NAME}  '
+                    f'pos=({pose.position.x:.3f},{pose.position.y:.3f},'
+                    f'{pose.position.z:.3f})')
             return
 
     # ── ROS timer callback ───────────────────────────────────────────────────
@@ -99,7 +104,7 @@ class VioPublisher(Node):
         ps.header.stamp = self.get_clock().now().to_msg()
         self._pub.publish(ps)
 
-        if count % int(VIO_HZ * 5) == 1:   # log every ~5 s
+        if count % int(VIO_HZ * 2) == 1:   # log every ~2 s
             p = ps.pose.position
             self.get_logger().info(
                 f'VIO pub  pos=({p.x:.3f}, {p.y:.3f}, {p.z:.3f})  '

@@ -39,6 +39,7 @@ class OffboardMission(Node):
         self.state   = State()
         self.local_z = 0.0
         self._sp_z   = TARGET_ALT   # controlled by control thread
+        self._first_pose_logged = False
 
         # Publishers
         self._sp_pub = self.create_publisher(
@@ -78,6 +79,10 @@ class OffboardMission(Node):
 
     def _pose_cb(self, msg: PoseStamped):
         self.local_z = msg.pose.position.z
+        if not self._first_pose_logged:
+            self._first_pose_logged = True
+            self.get_logger().info(
+                f'[SENSOR OK] EKF local pose stream active  z={self.local_z:.3f} m')
 
     def _publish_sp(self):
         self._sp.header.stamp        = self.get_clock().now().to_msg()
@@ -127,9 +132,19 @@ class OffboardMission(Node):
 
         # 1. Wait for MAVROS connection
         log.info('Waiting for MAVROS connection…')
+        _t_conn      = time.time()
+        _last_w_log  = time.time()
         while not self.state.connected:
             time.sleep(0.1)
-        log.info('MAVROS connected.')
+            if time.time() - _last_w_log >= 3.0:
+                _last_w_log = time.time()
+                log.info(
+                    f'  ...still waiting for MAVROS '
+                    f'({time.time()-_t_conn:.0f}s)  '
+                    f'armed={self.state.armed}  mode={self.state.mode}')
+        log.info(
+            f'[CONNECTED] MAVROS link established  '
+            f'({time.time()-_t_conn:.1f}s)')
 
         # 2. Pre-stream 2 s so PX4 sees a continuous setpoint before mode switch
         log.info('Pre-streaming setpoints for 2 s…')
@@ -153,15 +168,35 @@ class OffboardMission(Node):
             log.warn('Arm failed, retrying in 1 s…')
             time.sleep(1.0)
 
-        log.info(f'Armed! Climbing to {TARGET_ALT} m…')
+        log.info('=' * 48)
+        log.info('  *** DRONE ARMED — ASCENDING ***')
+        log.info(f'  Mode: {self.state.mode}  |  Target: {TARGET_ALT} m')
+        log.info('=' * 48)
 
         # 5. Climb
+        _last_alt_log = -1.0
         while self.local_z < TARGET_ALT - 0.3:
             time.sleep(0.1)
-        log.info(f'At {self.local_z:.2f} m. Hovering {HOVER_SECS} s…')
+            if self.local_z - _last_alt_log >= 0.4:
+                _last_alt_log = self.local_z
+                log.info(
+                    f'  [CLIMB] alt={self.local_z:.2f}m → {TARGET_ALT}m  '
+                    f'mode={self.state.mode}')
+        log.info(
+            f'[ALTITUDE REACHED] {self.local_z:.2f} m. '
+            f'Hovering {HOVER_SECS} s…')
 
-        # 6. Hover
-        time.sleep(HOVER_SECS)
+        # 6. Hover — with countdown every 5 s
+        _hover_t0 = time.time()
+        _next_log  = 0.0
+        while time.time() - _hover_t0 < HOVER_SECS:
+            elapsed = time.time() - _hover_t0
+            if elapsed >= _next_log:
+                _next_log = elapsed + 5.0
+                log.info(
+                    f'  [HOVER] {elapsed:.0f}s / {HOVER_SECS:.0f}s  '
+                    f'z={self.local_z:.2f}m  mode={self.state.mode}')
+            time.sleep(0.2)
         log.info('Hover complete. Switching to AUTO.LAND…')
 
         # 7. Hand landing to PX4 — AUTO.LAND owns descent, land-detect, auto-disarm
@@ -173,9 +208,15 @@ class OffboardMission(Node):
 
         # 8. Wait for PX4 land detector to confirm and auto-disarm (up to 60 s)
         log.info('Descending via AUTO.LAND… waiting for auto-disarm.')
-        deadline = time.time() + 60.0
+        deadline      = time.time() + 60.0
+        _last_lnd_log = 0.0
         while self.state.armed and time.time() < deadline:
             time.sleep(0.5)
+            if time.time() - _last_lnd_log >= 3.0:
+                _last_lnd_log = time.time()
+                log.info(
+                    f'  [LANDING] z={self.local_z:.2f}m  '
+                    f'mode={self.state.mode}  armed={self.state.armed}')
         if not self.state.armed:
             log.info('Landed and disarmed. Mission complete.')
         else:

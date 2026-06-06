@@ -29,7 +29,7 @@ HOLD_S       = 60.0   # hold duration
 SETPOINT_HZ  = 20.0
 PRESTREAM_S  = 6.0
 MAX_Z_SPEED  = 0.4    # m/s for climb
-LOG_INTERVAL = 5.0    # s between drift log lines
+LOG_INTERVAL = 3.0    # s between drift log lines
 
 DRIFT_WARN  = 0.15    # m  — log warning
 DRIFT_ABORT = 0.50    # m  — immediate land
@@ -70,15 +70,31 @@ class HoverTest(Node):
         self._max_drift_x = 0.0
         self._max_drift_y = 0.0
         self._samples     = 0
-        self._drift_exceeded = False
+        self._drift_exceeded  = False
+        self._first_pose_rcvd = False
 
         self.create_timer(1.0 / SETPOINT_HZ, self._loop, callback_group=cbg)
         self.get_logger().info(
             f'HoverTest ready — FLIGHT_ALT={FLIGHT_ALT}m  HOLD={HOLD_S}s  '
             f'WARN@{DRIFT_WARN}m  ABORT@{DRIFT_ABORT}m')
 
-    def _state_cb(self, msg): self._mav = msg
-    def _pose_cb(self, msg):  self._pose = msg
+    def _state_cb(self, msg):
+        prev_armed = self._mav.armed
+        self._mav  = msg
+        if msg.armed and not prev_armed:
+            self.get_logger().info('=' * 48)
+            self.get_logger().info('  *** DRONE ARMED ***')
+            self.get_logger().info(f'  Mode: {msg.mode}  |  Target: {FLIGHT_ALT} m')
+            self.get_logger().info('=' * 48)
+
+    def _pose_cb(self, msg):
+        self._pose = msg
+        if not self._first_pose_rcvd:
+            self._first_pose_rcvd = True
+            p = msg.pose.position
+            self.get_logger().info(
+                f'[SENSOR OK] EKF pose stream active  '
+                f'pos=({p.x:.3f},{p.y:.3f},{p.z:.3f})')
 
     def _xyz(self):
         p = self._pose.pose.position
@@ -163,13 +179,21 @@ class HoverTest(Node):
         elif self._phase == 'TAKEOFF':
             if pz >= FLIGHT_ALT - 0.25:
                 self.get_logger().info(
-                    f'At {pz:.2f} m — starting {HOLD_S:.0f} s hover hold.')
+                    f'[ALTITUDE REACHED] {pz:.2f} m — '
+                    f'starting {HOLD_S:.0f} s hover hold.')
                 self._t_hold     = time.time()
                 self._t_last_log = time.time()
                 self._phase = 'HOLD'
             elif time.time() - self._t_phase > 20.0 and pz < 0.5:
                 self.get_logger().error(f'TAKEOFF abort: z={pz:.2f} m after 20 s')
                 self._set_mode('AUTO.LAND'); self._phase = 'LAND'
+            else:
+                _now = time.time()
+                if _now - getattr(self, '_last_climb_log', 0) >= 2.0:
+                    self._last_climb_log = _now
+                    self.get_logger().info(
+                        f'  [CLIMB] alt={pz:.2f}m → {FLIGHT_ALT}m  '
+                        f'mode={self._mav.mode}')
 
         elif self._phase == 'HOLD':
             # Drift check
@@ -194,8 +218,8 @@ class HoverTest(Node):
                 status = 'OK' if drift <= DRIFT_WARN else 'DRIFT'
                 self.get_logger().info(
                     f'[HOLD {elapsed:5.1f}s/{HOLD_S:.0f}s]  '
-                    f'EKF=({px:.3f},{py:.3f},{pz:.3f})  '
-                    f'drift={drift:.3f}m  [{status}]')
+                    f'pos=({px:.3f},{py:.3f},{pz:.3f})m  '
+                    f'drift={drift:.3f}m  mode={self._mav.mode}  [{status}]')
                 if drift > DRIFT_WARN:
                     # Identify dominant drift axis and direction
                     ax = 'East' if px > 0 else 'West'

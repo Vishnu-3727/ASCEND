@@ -366,6 +366,9 @@ class ExplorationMissionPoly(Node):
         self._prestream_done      = False
         self._last_offboard_req_t = 0.0
         self._brake_logged        = False
+        self._first_pose_rcvd     = False
+        self._first_state_rcvd    = False
+        self._last_live_log_t     = 0.0
 
         # Stability recovery
         self._stabilize_return_to: str | None = None
@@ -393,10 +396,29 @@ class ExplorationMissionPoly(Node):
 
     # ── ROS callbacks ──────────────────────────────────────────────────────
     def _state_cb(self, msg: State):
+        prev_armed = self._mav_state.armed
         self._mav_state = msg
+        if not self._first_state_rcvd:
+            self._first_state_rcvd = True
+            self.get_logger().info(
+                f'[SENSOR OK] MAVROS state stream active  '
+                f'connected={msg.connected}  mode={msg.mode}')
+        if msg.armed and not prev_armed:
+            self.get_logger().info('=' * 52)
+            self.get_logger().info('  *** DRONE ARMED — MISSION STARTING ***')
+            self.get_logger().info(f'  Mode: {msg.mode}  |  Target alt: {FLIGHT_ALT} m')
+            self.get_logger().info('=' * 52)
+        elif not msg.armed and prev_armed:
+            self.get_logger().info('[DISARMED] Drone disarmed.')
 
     def _pose_cb(self, msg: PoseStamped):
         self._pose = msg
+        if not self._first_pose_rcvd:
+            self._first_pose_rcvd = True
+            p = msg.pose.position
+            self.get_logger().info(
+                f'[SENSOR OK] EKF local pose stream active  '
+                f'pos=({p.x:.3f},{p.y:.3f},{p.z:.3f})')
 
     # ── Low-level helpers ──────────────────────────────────────────────────
     def _make_sp(self, x: float, y: float, z: float) -> PoseStamped:
@@ -617,6 +639,24 @@ class ExplorationMissionPoly(Node):
 
     # ── Main control loop (20 Hz) ──────────────────────────────────────────
     def _loop(self):
+        if self._phase in ('TAKEOFF', 'EXPLORE', 'RETURN',
+                           'DESCEND', 'PAD_SEARCH', 'STABILIZE'):
+            _now = time.time()
+            if _now - self._last_live_log_t >= 3.0:
+                self._last_live_log_t = _now
+                px, py, pz = self._xyz()
+                gx, gy, gz = self._goal
+                gs   = self._grid.stats()
+                _tot = gs['unknown'] + gs['visited']
+                _pct = int(100 * gs['visited'] / _tot) if _tot > 0 else 0
+                self.get_logger().info(
+                    f'[{self._phase}] '
+                    f'pos=({px:.2f},{py:.2f},{pz:.2f})m  '
+                    f'goal=({gx:.2f},{gy:.2f})m  '
+                    f'dist={self._dist_goal():.2f}m  '
+                    f'covered={_pct}% ({gs["visited"]}/{_tot})  '
+                    f'mode={self._mav_state.mode}  '
+                    f'armed={self._mav_state.armed}')
         self._step_sp_toward_goal()
         self._sp.header.stamp = self.get_clock().now().to_msg()
         self._sp_pub.publish(self._sp)

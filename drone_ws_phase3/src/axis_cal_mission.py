@@ -32,6 +32,9 @@ class AxisCalMission(Node):
         self._pose  = PoseStamped()
         self._phase = 'PRESTREAM'
         self._phase_start = time.time()
+        self._first_pose_rcvd  = False
+        self._first_state_rcvd = False
+        self._last_log_t       = 0.0
 
         self._state_sub = self.create_subscription(State, '/mavros/state',
                                                    self._state_cb, QOS)
@@ -50,8 +53,28 @@ class AxisCalMission(Node):
         self.create_timer(0.05, self._tick)   # 20 Hz
         self.get_logger().info('AxisCal ready')
 
-    def _state_cb(self, msg): self._state = msg
-    def _pose_cb(self,  msg): self._pose  = msg
+    def _state_cb(self, msg):
+        prev_armed = self._state.armed
+        self._state = msg
+        if not self._first_state_rcvd:
+            self._first_state_rcvd = True
+            self.get_logger().info(
+                f'[SENSOR OK] MAVROS state active  '
+                f'connected={msg.connected}  mode={msg.mode}')
+        if msg.armed and not prev_armed:
+            self.get_logger().info('=' * 48)
+            self.get_logger().info('  *** DRONE ARMED ***')
+            self.get_logger().info(f'  Mode: {msg.mode}  |  Target: {FLIGHT_ALT} m')
+            self.get_logger().info('=' * 48)
+
+    def _pose_cb(self, msg):
+        self._pose = msg
+        if not self._first_pose_rcvd:
+            self._first_pose_rcvd = True
+            p = msg.pose.position
+            self.get_logger().info(
+                f'[SENSOR OK] EKF pose active  '
+                f'pos=({p.x:.3f},{p.y:.3f},{p.z:.3f})')
 
     def _z(self): return self._pose.pose.position.z
 
@@ -90,6 +113,18 @@ class AxisCalMission(Node):
 
         if mode.startswith('AUTO') and self._phase not in ('LAND','DONE'):
             self._next('LAND')
+
+        if self._phase in ('CLIMB', 'NORTH', 'EAST', 'SOUTH',
+                           'HOLD1', 'HOLD2', 'HOLD3'):
+            _now = time.time()
+            if _now - self._last_log_t >= 2.0:
+                self._last_log_t = _now
+                p = self._pose.pose.position
+                self.get_logger().info(
+                    f'  [{self._phase}] '
+                    f'pos=({p.x:.3f},{p.y:.3f},{p.z:.3f})m  '
+                    f'elapsed={self._elapsed():.1f}s  '
+                    f'mode={mode}')
 
         if self._phase == 'PRESTREAM':
             self._pub_vel()
