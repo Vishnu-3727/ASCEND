@@ -1,0 +1,19 @@
+# ── Python packages — install with: uv pip install -r requirements.txt ────────
+# Tested on Python 3.12 (pyenv) + UV on Raspberry Pi 5 (aarch64)
+
+numpy>=1.26
+opencv-python-headless>=4.9    # headless = no GTK/X11 deps (Pi-friendly)
+
+# ── ROS 2 Jazzy packages — install via apt (NOT pip) ─────────────────────────
+# sudo apt install -y \
+#   ros-jazzy-mavros \
+#   ros-jazzy-mavros-extras \
+#   ros-jazzy-mavros-msgs \
+#   ros-jazzy-cv-bridge \
+#   ros-jazzy-image-transport \
+#   ros-jazzy-sensor-msgs \
+#   ros-jazzy-geometry-msgs \
+#   python3-rclpy
+#
+# After installing MAVROS run once:
+#   sudo /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
