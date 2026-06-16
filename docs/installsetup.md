@@ -1,147 +1,231 @@
-# Runtime Execution Guide
+# INSTALL_SETUP.md
 
-## Terminal 1 — MAVProxy
-
-Activate virtual environment:
+## 1. Update System
 
 ```bash
-source ~/ijro/ascend/bin/activate
+sudo apt update
+sudo apt upgrade -y
+sudo reboot
 ```
-
-Start MAVProxy:
-
-```bash
-mavproxy.py \
---master=/dev/ttyAMA0,921600 \
---out=udp:127.0.0.1:14551 \
---out=udp:<LAPTOP_IP>:14550
-```
-
-Purpose:
-
-* Receives MAVLink from Cube Orange through TELEM1 UART.
-* Forwards MAVLink to MAVROS on localhost UDP 14551.
-* Forwards telemetry to QGroundControl on the laptop through UDP 14550.
 
 ---
 
-## Terminal 2 — MAVROS
+## 2. Install ROS 2 Jazzy
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+sudo apt install software-properties-common -y
 
-export ROS_DOMAIN_ID=77
+sudo add-apt-repository universe -y
 
-ros2 launch mavros px4.launch \
-fcu_url:=udp://127.0.0.1:14551@
+sudo apt update
 ```
 
-Purpose:
+Add ROS repository:
 
-* Receives MAVLink from MAVProxy.
-* Publishes ROS topics and services.
-* Acts as the ROS ↔ PX4 bridge.
+```bash
+sudo curl -sSL \
+https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+-o /usr/share/keyrings/ros-archive-keyring.gpg
+```
+
+```bash
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu noble main" | sudo tee /etc/apt/sources.list.d/ros2.list
+```
+
+```bash
+sudo apt update
+```
+
+Install ROS:
+
+```bash
+sudo apt install -y ros-jazzy-base
+```
+
+Configure ROS:
+
+```bash
+echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+
+source ~/.bashrc
+```
 
 ---
 
-## Terminal 3 — Verify MAVROS Connection
+## 3. Install MAVROS
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+sudo apt install -y \
+ros-jazzy-mavros \
+ros-jazzy-mavros-extras \
+ros-jazzy-mavros-msgs
+```
 
-ros2 topic echo /mavros/state
+Verify:
+
+```bash
+ros2 pkg list | grep mavros
 ```
 
 Expected:
 
-```yaml
-connected: true
-armed: false
+```text
+mavros
+mavros_extras
+mavros_msgs
 ```
-
-If `connected: true`, communication between PX4 and MAVROS is established.
 
 ---
 
-## Terminal 4 — Mission Script
+## 4. Install GeographicLib Datasets
+
+Required by MAVROS.
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+sudo /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
+```
+
+Verify:
+
+```bash
+ls /usr/share/GeographicLib/geoids/
+```
+
+Expected:
+
+```text
+egm96-5.pgm
+```
+
+---
+
+## 5. Create Workspace Directory
+
+```bash
+mkdir -p ~/ijro
+
+cd ~/ijro
+```
+
+---
+
+## 6. Create Python Virtual Environment
+
+```bash
+python3 -m venv ascend
+```
+
+Activate:
+
+```bash
+source ~/ijro/ascend/bin/activate
+```
+
+Upgrade pip:
+
+```bash
+pip install --upgrade pip setuptools wheel
+```
+
+---
+
+## 7. Install Python Dependencies
+
+Inside virtual environment:
+
+```bash
+pip install \
+numpy \
+opencv-python-headless \
+pymavlink \
+pyserial \
+pyyaml \
+MAVProxy
+```
+
+---
+
+## 8. Clone Repository
+
+```bash
+cd ~/ijro
+
+git clone <REPOSITORY_URL> ASCEND
+```
+
+Install project requirements:
+
+```bash
 source ~/ijro/ascend/bin/activate
 
 cd ~/ijro/ASCEND
-```
 
-Run the required mission:
-
-```bash
-python takeoff.py
-```
-
-or
-
-```bash
-python survey.py
-```
-
-or
-
-```bash
-python landing.py
-```
-
-or
-
-```bash
-python mission.py
+pip install -r requirements.txt
 ```
 
 ---
 
-## QGroundControl
+## 9. Configure ROS Domain ID
 
-1. Connect laptop to the same router/network as the Raspberry Pi.
-2. Open QGroundControl.
-3. MAVProxy forwards telemetry to UDP port 14550.
-4. QGroundControl should automatically connect and display:
+```bash
+echo "export ROS_DOMAIN_ID=77" >> ~/.bashrc
 
-* Vehicle Status
-* Flight Mode
-* GPS
-* Battery
-* Telemetry
+source ~/.bashrc
+```
 
-No manual serial port configuration is required.
+Verify:
 
----
+```bash
+echo $ROS_DOMAIN_ID
+```
 
-# Communication Architecture
+Expected:
 
 ```text
-Cube Orange (PX4)
-        │
-        │ UART (TELEM1)
-        ▼
-     MAVProxy
-        │
-        ├── UDP 14551 ──► MAVROS
-        │                    │
-        │                    ▼
-        │              Mission Scripts
-        │
-        └── UDP 14550 ──► QGroundControl
+77
 ```
 
 ---
 
-# Mission Startup Sequence
+## 10. UART Permissions
 
-1. Power Cube Orange.
-2. Power Raspberry Pi.
-3. Connect laptop to router.
-4. SSH into Raspberry Pi.
-5. Start MAVProxy.
-6. Start MAVROS.
-7. Verify `/mavros/state` shows `connected: true`.
-8. Open QGroundControl and verify vehicle connection.
-9. Run mission script.
+```bash
+sudo usermod -aG dialout $USER
+```
+
+Logout and login again.
+
+Temporary test:
+
+```bash
+sudo chmod 666 /dev/ttyAMA0
+```
+
+---
+
+## 11. Verify Cube Connection
+
+```bash
+source ~/ijro/ascend/bin/activate
+
+python - << 'EOF'
+from pymavlink import mavutil
+
+master = mavutil.mavlink_connection(
+    '/dev/ttyAMA0',
+    baud=921600
+)
+
+master.wait_heartbeat(timeout=15)
+
+print("Heartbeat received!")
+print("System:", master.target_system)
+EOF
+```
+
+Expected:
+
+```text
+Heartbeat received!
+```
+
