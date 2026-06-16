@@ -1,0 +1,193 @@
+#!/usr/bin/python3
+"""
+Drone ARM script — ROS 2 Jazzy + MAVROS + PX4
+Arms the drone in OFFBOARD mode and holds position at ground level.
+No takeoff. Ctrl+C to disarm and exit.
+"""
+
+import threading
+import time
+
+import rclpy
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from geometry_msgs.msg import PoseStamped
+from mavros_msgs.srv import SetMode, CommandBool
+from mavros_msgs.msg import State
+
+STREAM_HZ = 20
+
+SENSOR_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
+
+
+class DroneArm(Node):
+    def __init__(self):
+        super().__init__('drone_arm')
+
+        self.state   = State()
+        self.local_z = 0.0
+        self._hold_z = 0.0   # set from first pose reading; holds current position
+
+        self._sp_pub = self.create_publisher(
+            PoseStamped, '/mavros/setpoint_position/local', 10)
+
+        self.create_subscription(State, '/mavros/state', self._state_cb, 10)
+        self.create_subscription(
+            PoseStamped, '/mavros/local_position/pose',
+            self._pose_cb, SENSOR_QOS)
+
+        self._mode_cli = self.create_client(SetMode,     '/mavros/set_mode')
+        self._arm_cli  = self.create_client(CommandBool, '/mavros/cmd/arming')
+
+        self._sp = PoseStamped()
+        self._sp.header.frame_id    = 'map'
+        self._sp.pose.position.z    = 0.0
+        self._sp.pose.orientation.w = 1.0
+
+        self.create_timer(1.0 / STREAM_HZ, self._publish_sp)
+
+        self._ctrl = threading.Thread(target=self._control_loop, daemon=True)
+        self._ctrl.start()
+
+        self.get_logger().info('DroneArm node started.')
+
+    # ------------------------------------------------------------------ #
+    # Executor callbacks                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _state_cb(self, msg: State):
+        self.state = msg
+
+    def _pose_cb(self, msg: PoseStamped):
+        self.local_z = msg.pose.position.z
+        # Latch hold position from first reading so setpoint stays on ground
+        if self._hold_z == 0.0:
+            self._hold_z = self.local_z
+            self._sp.pose.position.z = self._hold_z
+            self.get_logger().info(
+                f'[SENSOR OK] EKF pose active  z={self.local_z:.3f} m  '
+                f'hold target locked at {self._hold_z:.3f} m')
+
+    def _publish_sp(self):
+        self._sp.header.stamp = self.get_clock().now().to_msg()
+        self._sp_pub.publish(self._sp)
+
+    # ------------------------------------------------------------------ #
+    # Service helper — safe from non-callback thread                       #
+    # ------------------------------------------------------------------ #
+
+    def _call(self, client, request, timeout=8.0):
+        if not client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error(f'Service {client.srv_name} unavailable')
+            return None
+        future   = client.call_async(request)
+        deadline = time.time() + timeout
+        while not future.done():
+            if time.time() > deadline:
+                self.get_logger().warn(f'{client.srv_name} timed out')
+                return None
+            time.sleep(0.05)
+        return future.result()
+
+    def _set_mode(self, mode: str) -> bool:
+        req = SetMode.Request()
+        req.custom_mode = mode
+        res = self._call(self._mode_cli, req)
+        ok  = res is not None and res.mode_sent
+        self.get_logger().info(f'set_mode({mode}) → {"OK" if ok else "FAILED"}')
+        return ok
+
+    def _arm(self, value: bool) -> bool:
+        req = CommandBool.Request()
+        req.value = value
+        res = self._call(self._arm_cli, req)
+        ok  = res is not None and res.success
+        self.get_logger().info(f'arm({value}) → {"OK" if ok else "FAILED"}')
+        return ok
+
+    def _disarm(self):
+        self.get_logger().info('Disarming…')
+        self._set_mode('AUTO.LAND')
+        time.sleep(1.0)
+        self._arm(False)
+
+    # ------------------------------------------------------------------ #
+    # Control loop                                                         #
+    # ------------------------------------------------------------------ #
+
+    def _control_loop(self):
+        log = self.get_logger()
+
+        # 1. Wait for MAVROS FCU link
+        log.info('Waiting for MAVROS FCU connection…')
+        t0 = time.time()
+        _last_log = time.time()
+        while not self.state.connected:
+            time.sleep(0.1)
+            if time.time() - _last_log >= 3.0:
+                _last_log = time.time()
+                log.info(f'  ...waiting ({time.time()-t0:.0f}s)')
+        log.info(f'[CONNECTED] FCU link up ({time.time()-t0:.1f}s)')
+
+        # 2. Pre-stream setpoints for 2 s — PX4 requires this before OFFBOARD
+        log.info('Pre-streaming setpoints for 2 s…')
+        time.sleep(2.0)
+
+        # 3. Switch to OFFBOARD
+        while True:
+            if self.state.mode == 'OFFBOARD':
+                log.info('Already in OFFBOARD mode.')
+                break
+            if self._set_mode('OFFBOARD'):
+                break
+            log.warn('OFFBOARD switch failed — retrying in 1 s…')
+            time.sleep(1.0)
+
+        # 4. ARM
+        time.sleep(0.5)
+        while not self.state.armed:
+            if self._arm(True):
+                break
+            log.warn('Arm failed — retrying in 1 s…')
+            time.sleep(1.0)
+
+        log.info('=' * 50)
+        log.info('  *** DRONE ARMED ***')
+        log.info(f'  Mode : {self.state.mode}')
+        log.info(f'  Hold Z : {self._hold_z:.3f} m')
+        log.info('  Press Ctrl+C to disarm and exit.')
+        log.info('=' * 50)
+
+        # 5. Hold — keep reporting status every 5 s
+        _next_log = time.time() + 5.0
+        while True:
+            time.sleep(0.2)
+            if time.time() >= _next_log:
+                _next_log = time.time() + 5.0
+                log.info(
+                    f'  [ARMED] z={self.local_z:.3f} m  '
+                    f'mode={self.state.mode}  armed={self.state.armed}')
+
+
+def main():
+    rclpy.init()
+    node     = DroneArm()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        node.get_logger().info('KeyboardInterrupt — shutting down.')
+        node._disarm()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
