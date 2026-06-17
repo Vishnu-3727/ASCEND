@@ -6,11 +6,12 @@ No takeoff. Ctrl+C to disarm and exit.
 
 MAVLink data path:
     PX4 (serial /dev/ttyAMA0) → MAVProxy → UDP 127.0.0.1:14551 → MAVROS
-This node talks to MAVROS over ROS 2 topics/services only; it does not
-open the UDP socket itself. The 14551 split is configured in MAVProxy
-and consumed by MAVROS via fcu_url=udp://:14551 (see docker-compose.yml).
+This script launches MAVROS itself (see launch_mavros) with
+fcu_url=udp://:14551, then talks to it over ROS 2 topics/services.
+The 14551 UDP split is produced by MAVProxy on the Pi.
 """
 
+import subprocess
 import threading
 import time
 
@@ -23,6 +24,34 @@ from mavros_msgs.srv import SetMode, CommandBool
 from mavros_msgs.msg import State
 
 STREAM_HZ = 20
+
+# MAVROS FCU link — MAVProxy splits the PX4 serial stream out to this UDP port.
+FCU_URL = 'udp://:14551'
+GCS_URL = 'udp://@192.168.1.100:14550'
+
+
+def launch_mavros():
+    """Spawn mavros_node as a child process and return the Popen handle."""
+    cmd = [
+        'ros2', 'run', 'mavros', 'mavros_node', '--ros-args',
+        '-p', f'fcu_url:={FCU_URL}',
+        '-p', f'gcs_url:={GCS_URL}',
+    ]
+    print(f'[MAVROS] launching: {" ".join(cmd)}', flush=True)
+    return subprocess.Popen(cmd)
+
+
+def stop_mavros(proc):
+    """Terminate the MAVROS child process cleanly."""
+    if proc is None or proc.poll() is not None:
+        return
+    print('[MAVROS] terminating…', flush=True)
+    proc.terminate()
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
 
 SENSOR_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -181,6 +210,10 @@ class DroneArm(Node):
 
 
 def main():
+    mavros = launch_mavros()
+    # Give MAVROS a moment to come up before we start talking to it.
+    time.sleep(3.0)
+
     rclpy.init()
     node     = DroneArm()
     executor = MultiThreadedExecutor()
@@ -193,6 +226,7 @@ def main():
     finally:
         node.destroy_node()
         rclpy.shutdown()
+        stop_mavros(mavros)
 
 
 if __name__ == '__main__':
