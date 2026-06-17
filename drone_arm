@@ -3,6 +3,12 @@
 Drone ARM script — ROS 2 Jazzy + MAVROS + PX4
 Arms the drone in OFFBOARD mode and holds position at ground level.
 No takeoff. Ctrl+C to disarm and exit.
+
+MAVLink data path:
+    PX4 (serial /dev/ttyAMA0) → MAVProxy → UDP 127.0.0.1:14551 → MAVROS
+This node talks to MAVROS over ROS 2 topics/services only; it does not
+open the UDP socket itself. The 14551 split is configured in MAVProxy
+and consumed by MAVROS via fcu_url=udp://:14551 (see docker-compose.yml).
 """
 
 import threading
